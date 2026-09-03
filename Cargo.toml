@@ -1,0 +1,33 @@
+[package]
+name = "fano"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+license = "Apache-2.0"
+description = "Fano: a per-chunk compression scheme for tensor data. Splits each element into byte planes and entropy-codes the one that carries the information."
+repository = "https://github.com/Cranot/fano"
+readme = "README.md"
+keywords = ["compression", "tensor", "safetensors", "storage"]
+categories = ["compression"]
+exclude = ["target/**", "*.o", "*.a", "vectors.txt"]
+include = ["src/**", "build.rs", "Cargo.toml", "plane_entropy.*", "third_party/**",
+           "README.md", "LICENSE", "NOTICE", "THIRD_PARTY.md", "SPEC.md"]
+
+[lib]
+name = "fano"
+path = "src/lib.rs"
+
+[dependencies]
+
+[build-dependencies]
+cc = "1.0"
+
+[dev-dependencies]
+
+[features]
+default = []
+# Compile out every SIMD path; the scalar fallback produces identical bytes.
+no-simd = []
+
+[profile.release]
+opt-level = 3

@@ -1,0 +1,45 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    name: ${{ matrix.cc }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            cc: gcc
+            cxx: g++
+          - os: ubuntu-24.04
+            cc: clang
+            cxx: clang++
+          - os: ubuntu-22.04
+            cc: gcc
+            cxx: g++
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: make -j all
+      - name: unit tests (frozen vectors, optimised == reference, corruption)
+        run: ./test_pe
+      - name: unit tests under ASAN + UBSAN
+        run: make test_pe_asan && ./test_pe_asan
+      - name: scalar fallback gives identical bytes (every SIMD path compiled out)
+        run: make check-nosimd
+      - name: mutation fuzz with the differential oracle, 90 s, seed = run number
+        run: make fuzz_pe && ./fuzz_pe 90 ${{ github.run_number }}
+      - name: C ABI compiles as C
+        run: $CC -std=c99 -Wall -Wextra -Werror -fsyntax-only -x c plane_entropy.h
+  aarch64:
+    name: gcc / aarch64 (scalar path)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: build and test without x86 SIMD
+        run: make -j test_pe && ./test_pe

@@ -1,0 +1,7 @@
+plane-entropy
+Copyright 2025 Cranot
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software developed by Yann Collet: FiniteStateEntropy (huff0/FSE),
+licensed under the BSD 2-Clause License, in third_party/fse (see third_party/fse/LICENSE).

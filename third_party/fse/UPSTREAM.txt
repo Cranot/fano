@@ -1,0 +1,3 @@
+FiniteStateEntropy lib/ files, copied unmodified from the checkout at /root/mzip-hfbench/fse on 2026-09-02.
+upstream commit: 9f30e0918f87bd835fa040d922a208d7b219e50b (Sat Mar 9 23:59:38 2024 -0800)
+#define FSE_VERSION_MAJOR    0

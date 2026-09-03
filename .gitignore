@@ -1,0 +1,10 @@
+target/
+*.o
+*.a
+test_pe
+test_pe_asan
+test_pe_nosimd
+test_pe_noavx
+bench_pe
+fuzz_pe
+Cargo.lock

@@ -1,0 +1,137 @@
+Adding Fano to xet-core as compression scheme 3
+===============================================
+
+This is the whole change, against xet-core main 7af65ba2. It adds one variant to
+`CompressionScheme` and one dependency. Nothing else in the store moves: the chunk record is
+unchanged, the chunk hash is still taken over the uncompressed bytes so deduplication is untouched,
+and `serialize_chunk` already falls back to `None` when a scheme does not make the chunk smaller.
+
+The crate carries the uncompressed length inside its own payload as a varint, so
+`decompress_from_slice(&self, data: &[u8])` keeps its current signature. That was deliberate: the
+alternative was threading a length parameter through three call sites, and it costs three bytes on
+a 64 KiB chunk.
+
+--- a/xet_core_structures/Cargo.toml
++++ b/xet_core_structures/Cargo.toml
+@@
+ [dependencies]
++fano = "0.1"
+
+--- a/xet_core_structures/src/xorb_object/compression_scheme.rs
++++ b/xet_core_structures/src/xorb_object/compression_scheme.rs
+@@ -22,10 +22,11 @@
+ /// Dis-allow the value of ascii capital letters as valid CompressionScheme, 65-90
+ #[repr(u8)]
+ #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+ pub enum CompressionScheme {
+     None = 0,
+     LZ4 = 1,
+     ByteGrouping4LZ4 = 2, // 4 byte groups
++    Fano = 3,             // byte-plane order-0 entropy coding, for tensor data
+     #[default]
+     Auto = 99,
+ }
+
+@@ impl From<&CompressionScheme> for &str
+             CompressionScheme::Auto => "auto",
+             CompressionScheme::LZ4 => "lz4",
+             CompressionScheme::ByteGrouping4LZ4 => "bg4-lz4",
++            CompressionScheme::Fano => "fano",
+             CompressionScheme::None => "none",
+
+@@ impl TryFrom<u8> for CompressionScheme
+             0 => Ok(CompressionScheme::None),
+             1 => Ok(CompressionScheme::LZ4),
+             2 => Ok(CompressionScheme::ByteGrouping4LZ4),
++            3 => Ok(CompressionScheme::Fano),
+             99 => Ok(CompressionScheme::Auto),
+
+@@ impl FromStr for CompressionScheme
+             "none" => Ok(CompressionScheme::None),
+             "lz4" => Ok(CompressionScheme::LZ4),
+             "bg4-lz4" => Ok(CompressionScheme::ByteGrouping4LZ4),
++            "fano" => Ok(CompressionScheme::Fano),
+
+@@ pub fn compress_from_slice
+             CompressionScheme::None => data.into(),
+             CompressionScheme::LZ4 => lz4_compress_from_slice(data).map(Cow::from)?,
+             CompressionScheme::ByteGrouping4LZ4 => bg4_lz4_compress_from_slice(data).map(Cow::from)?,
++            // returns the input unchanged when the scheme does not pay; serialize_chunk then
++            // stores the chunk as None, exactly as it already does for a too-large LZ4 result
++            CompressionScheme::Fano => match fano::compress(data) {
++                Some(v) => Cow::from(v),
++                None => data.into(),
++            },
+
+@@ pub fn decompress_from_slice
+             CompressionScheme::None => data.into(),
+             CompressionScheme::LZ4 => lz4_decompress_from_slice(data).map(Cow::from)?,
+             CompressionScheme::ByteGrouping4LZ4 => bg4_lz4_decompress_from_slice(data).map(Cow::from)?,
++            CompressionScheme::PlaneEntropy => fano::decompress(data)
++                .map(Cow::from)
++                .map_err(|e| CoreError::MalformedData(e.to_string()))?,
+
+@@ pub fn decompress_from_reader
+             CompressionScheme::None => copy(reader, writer)?,
+             CompressionScheme::LZ4 => lz4_decompress_from_reader(reader, writer)?,
+             CompressionScheme::ByteGrouping4LZ4 => bg4_lz4_decompress_from_reader(reader, writer)?,
++            CompressionScheme::Fano => {
++                let mut buf = Vec::new();
++                reader.read_to_end(&mut buf)?;
++                let out = fano::decompress(&buf)
++                    .map_err(|e| CoreError::MalformedData(e.to_string()))?;
++                writer.write_all(&out)?;
++                out.len() as u64
++            },
+
+
+Choosing the scheme
+-------------------
+
+`choose_from_data` currently runs BG4Predictor and picks `ByteGrouping4LZ4` when the maximum KL
+divergence of the four byte-position histograms exceeds 0.02, and `LZ4` otherwise. Two policies,
+both measured:
+
+  Cheapest change, and the one to ship first. Where the predictor already says bg4 — F32 and BF16
+  tensors — use Fano instead. That is exactly the set where it wins on all three axes:
+  11-36% smaller, 1.4-2.4x faster to compress, 1.4-2.1x faster to read.
+
+      if bg4_recommended { CompressionScheme::Fano } else { CompressionScheme::LZ4 }
+
+  Full coverage. Also try it where the predictor says LZ4 and the chunk is not text-like. F16, FP8,
+  INT8, INT32 and UINT32 tensors all fail the KL test, which is why they are stored raw today, and
+  the coder takes 4-42% off them. The trial costs one encode, 50-75 us per 64 KiB chunk, and the
+  result is kept only if it beats the alternative by the margin the store chooses. A threshold near
+  8% keeps quantised GGUF raw, where the 6% saving is not worth the read cost.
+
+A predictor that avoids the trial encode is the obvious next step: the encoder already computes a
+Miller-Madow order-0 estimate of every plane to choose its plane count, and exposing that as
+`pe_estimate_bits(src, n)` would give the selector an expected size for one histogram pass.
+
+
+Rolling it out
+--------------
+
+`XorbChunkHeader::validate` rejects an unknown scheme byte, so a client without the decoder cannot
+read a scheme-3 chunk. The order is therefore:
+
+  1. ship the decoder in hf_xet and in every server-side path that reconstructs chunks;
+  2. only then enable scheme 3 in the writer, or enable it server-side at rest and serve decoded
+     bytes to clients that predate the decoder — the reconstruction path already reads every chunk
+     it serves.
+
+The header `version` byte stays 0: the record layout does not change, only the scheme table.
+
+
+What it costs at run time
+-------------------------
+
+Per 64 KiB chunk on one core, medians of at least three interleaved runs:
+
+  class                          today (bg4-lz4 or raw)      fano
+  F32 compress / read            72-124 us / 23-30 us        52-57 us / 13-22 us
+  BF16 compress / read           126-137 us / 27-31 us       56-58 us / 18 us
+  F16, FP8, INT8 (raw today)     33-55 us / 3-9 us           63-90 us / 21-56 us
+
+Encoder scratch is thread-local and grows once per thread to one segment; the decoder writes only
+into the caller's buffer.
