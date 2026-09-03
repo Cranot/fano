@@ -110,11 +110,12 @@ layer and upgrade in place while the rest streams. Measured on real weights, the
 is smaller than the status quo, not a trade against it, and a usable model is in hand at 30% of the
 download — 3.3× sooner. Against Fano's own flat 10.7 that route costs two bits per weight. A second
 route costs nothing at all: split by *bit plane* — sign, exponent and the top four mantissa bits first,
-the last four bits after — and the two layers total **10.55 bits, 1.5% below Fano's flat encoding**,
-with a usable 4-mantissa-bit model in hand at 47% of today's bytes. The gain is real for the flat codec
-too: coding the top twelve bits as one alphabet catches an exponent-to-mantissa dependence the byte
-plane misses. Both routes are measured in `mzip/hfbench` RESULTs 114–115; the layering is a container
-proposal, not yet a format.
+the last four bits after — and the two layers total **the same 10.7 bits as the flat encoding** once
+each chunk carries its own table, with a usable 4-mantissa-bit model in hand at 47% of today's bytes.
+(The entropy bound says 1.5% better; a per-chunk table for a 4,096-symbol alphabet eats exactly that,
+and only a table shared across a tensor's chunks — a format feature, not a codec one — recovers it.)
+Both routes are measured in `mzip/hfbench` RESULTs 114–115 and costed in 121; the layering is a
+container proposal, not yet a format.
 
 ## Using it
 
