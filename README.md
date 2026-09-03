@@ -57,18 +57,24 @@ quantised models on the Hub are the deterministic output of a program whose inpu
 holds.** A `Q8_0` GGUF is `llama.cpp` run over weights that sit in another repository, and the Hub
 records that relationship in its own `base_model:quantized` tags — on 80% of GGUF bytes.
 
-Given the parent, the quantised file barely needs storing. The block scale `d = amax/127` recomputes
-exactly, every block. The codes recompute by inverting the dequantisation formula; 99.4% land
-exactly and the rest are off by one. Measured across eight repositories and four base models, a
-`Q8_0` costs **1.4% of itself** given its parent. `Q5_K` and `Q6_K` reproduce every code exactly and
-keep only their scales — 9%. Fused mixture-of-experts tensors reproduce at 100%.
+Given the parent, the quantised file does not need storing at all. Running the publisher's own
+toolchain on the parent — `convert_hf_to_gguf`, then `llama-quantize` with the publisher's imatrix
+and the per-tensor types the published header already lists — **reproduces the published file byte
+for byte.** Measured on two publishers and two architectures: a mradermacher static Q4_K_M, exact
+across all 4,596,736 superblocks; a bartowski imatrix Q4_K_M on a hybrid-SSM model, exact across all
+19,850,240 superblocks, with 152 bytes of a 2.88 GB file differing — thirty-eight float32 values off
+by one ulp where the converter calls `exp()`, a libm artefact outside the quantiser entirely. The
+toolchain is deterministic and hardware-independent: two builds, one with every SIMD extension off,
+produced identical bytes.
 
-That is a *recipe*, not a compression ratio: the saving is real only while the parent is held, so
-it belongs inside a content-addressed store as a derived-chunk type, not in a codec. Fano is the
-codec. The recipe layer is measured and documented but not yet shipped — the measurement record,
-every script, and the honest accounting of what resolves and what does not are in
-[`mzip/hfbench`](https://github.com/Cranot/mzip/tree/master/hfbench). If you run a store and want to
-talk about that layer, the numbers are there to argue with.
+So the file is a *recipe*: parent, tool versions, output precision, quant type, imatrix, and a type
+map that costs nothing because the header carries it. That belongs inside a content-addressed store
+as a derived-chunk type, not in a codec — the saving holds only while the parent is held, and it is
+bought with ingest compute rather than bytes. Fano is the codec. The recipe layer is measured and
+documented but not shipped; the record, every script, and the honest accounting of what resolves
+(41–66% of declared parents today) and what does not are in
+[`mzip/hfbench`](https://github.com/Cranot/mzip/tree/master/hfbench). If you run a store and want
+to talk about that layer, the numbers are there to argue with.
 
 ## Using it
 
