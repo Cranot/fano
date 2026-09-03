@@ -89,6 +89,12 @@ wrong: a base-plus-instruct merge tagged as a quantisation of the base, caught i
 F32 norms did not match. The toolchain itself is deterministic and hardware-independent: two builds,
 one with every SIMD extension off, produced identical bytes.
 
+The same logic reaches past quantisation. Half of the 16-bit uploads that no within-week comparison
+could place turn out to be fine-tunes or copies of a popular model uploaded months earlier — found by
+guessing the most-downloaded model of the same shape and checking 64 KiB — and half of those carry no
+tag at all. Stored against the parent with an FSE delta coder built from Fano's own entropy stage, a
+fine-tune costs about a tenth to a third of the flat file.
+
 So the file is a *recipe*: parent, tool versions, output precision, quant type, imatrix, and a type
 map that costs nothing because the header carries it. That belongs inside a content-addressed store
 as a derived-chunk type, not in a codec — the saving holds only while the parent is held, and it is
