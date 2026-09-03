@@ -108,9 +108,13 @@ to 8-bit, the residual that restores exact bf16 — and a client can start infer
 layer and upgrade in place while the rest streams. Measured on real weights, the three layers total
 **12.7 bits per weight against the 14.0 the Hub stores the flat file at today**: progressive delivery
 is smaller than the status quo, not a trade against it, and a usable model is in hand at 30% of the
-download — 3.3× sooner. Against Fano's own flat 10.7 it costs two bits per weight; that is the price
-of starting early. Fano codes each layer the way it codes anything else; the layering is a container
-proposal, measured in `mzip/hfbench` RESULT 114, not yet a format.
+download — 3.3× sooner. Against Fano's own flat 10.7 that route costs two bits per weight. A second
+route costs nothing at all: split by *bit plane* — sign, exponent and the top four mantissa bits first,
+the last four bits after — and the two layers total **10.55 bits, 1.5% below Fano's flat encoding**,
+with a usable 4-mantissa-bit model in hand at 47% of today's bytes. The gain is real for the flat codec
+too: coding the top twelve bits as one alphabet catches an exponent-to-mantissa dependence the byte
+plane misses. Both routes are measured in `mzip/hfbench` RESULTs 114–115; the layering is a container
+proposal, not yet a format.
 
 ## Using it
 
