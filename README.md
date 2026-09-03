@@ -1,14 +1,29 @@
 # Fano
 
-**Tensor files stored 11–36% smaller than Hugging Face's Xet stores them today, and read back
-faster.** Drop-in for a content-addressed store: one new scheme byte, dedup untouched, exact bytes
-back or an error. Apache-2.0, one vendored dependency, decoder written twice so the two can be
-checked against each other.
+**Model weights stored 11–36% smaller than Hugging Face stores them today — and read back faster.**
 
-The idea fits in a sentence. A floating-point weight is two or four bytes, and nearly all of the
-redundancy sits in one of them — the sign and exponent — while the mantissa is close to noise. Code
-that byte on its own and pass the rest through untouched. A compressor that sees the element as an
-opaque run of bytes averages the two together and finds little in either.
+Fano is a small compressor for the files machine-learning models are made of. It is measured, not
+estimated: every number below comes from real files on the Hugging Face Hub, compared byte for byte
+against what the Hub's storage layer does with the same files right now.
+
+Three things to know before the table:
+
+- **Weights get smaller *and* faster.** On 16- and 32-bit weights the file shrinks by a fifth to a
+  third, and both writing and reading speed up. There is no trade to make.
+- **Some files the Hub stores untouched can shrink too.** 8-bit and half-precision formats are kept
+  raw today because ordinary compressors find nothing in them. Fano finds 18–42%.
+- **Quantised models turn out not to need storing at all.** They are the output of a program run on
+  a model the Hub already holds. Run it again and the same bytes come back — verified on seven files
+  from five publishers. That is a bigger saving than any compressor, and it is measured here too.
+
+The idea behind the codec fits in a sentence. A floating-point weight is two or four bytes, and nearly
+all of its redundancy sits in one of them — the sign and exponent — while the rest is close to noise.
+Code that byte on its own and pass the rest through. A compressor that sees the number as an opaque
+run of bytes averages the two together and finds little in either.
+
+Apache-2.0. One vendored dependency. Decoder written twice so the two can be checked against each
+other. Drop-in for a content-addressed store: one new scheme byte, deduplication untouched, exact
+bytes back or an error.
 
 ---
 
@@ -60,18 +75,19 @@ records that relationship in its own `base_model:quantized` tags — on 80% of G
 Given the parent, the quantised file does not need storing at all. Running the publisher's own
 toolchain on the parent — `convert_hf_to_gguf`, then `llama-quantize` with the publisher's imatrix
 and the per-tensor types the published header already lists — **reproduces the published file byte
-for byte.** Measured on six files from five publishers and five architectures. Three are exact: a
-mradermacher static Q4_K_M (all 4,596,736 superblocks); a bartowski imatrix Q4_K_M on a hybrid-SSM
-model (all 19,850,240 superblocks, 152 bytes differing — thirty-eight float32 values one ulp apart
-where the converter calls `exp()`); and a Q8_0 written by a *different exporter entirely*, which
-llama.cpp's toolchain reproduced across all 113 tensors — the format is a closed form and two
-implementations agree on every byte. Two mixture-of-experts models reproduce every fused expert tensor
-exactly and land at 99.96% and 96.5% overall; both residuals trace to the quantiser *build* — a type
-rule that ignores overrides, and imatrix weighting that moved between versions — so a recipe names the
-llama.cpp commit, not just its version. The sixth file did not reproduce because its declared parent
-was wrong: a base-plus-instruct merge tagged as a quantisation of the base, caught in one step because
-its F32 norms did not match. The toolchain itself is deterministic and hardware-independent: two
-builds, one with every SIMD extension off, produced identical bytes.
+for byte.** Measured on seven files from five publishers and five architectures, three of them
+mixture-of-experts. Four are exact: a mradermacher static Q4_K_M (all 4,596,736 superblocks); a
+bartowski imatrix Q4_K_M on a hybrid-SSM model (all 19,850,240 superblocks, 152 bytes differing —
+thirty-eight float32 values one ulp apart where the converter calls `exp()`); a Q8_0 written by a
+*different exporter entirely*, which llama.cpp's toolchain reproduced across all 113 tensors — the
+format is a closed form and two implementations agree on every byte; and a 64-expert MoE from this
+week's uploads, all 26,738,688 superblocks. Two older MoE files reproduce every expert tensor exactly
+and land at 99.96% and 96.5% overall; both residuals trace to the quantiser *build* — a type rule that
+ignores overrides, and imatrix weighting that moved between versions — so a recipe names the llama.cpp
+commit, not just its version. The seventh file did not reproduce because its declared parent was
+wrong: a base-plus-instruct merge tagged as a quantisation of the base, caught in one step because its
+F32 norms did not match. The toolchain itself is deterministic and hardware-independent: two builds,
+one with every SIMD extension off, produced identical bytes.
 
 So the file is a *recipe*: parent, tool versions, output precision, quant type, imatrix, and a type
 map that costs nothing because the header carries it. That belongs inside a content-addressed store
