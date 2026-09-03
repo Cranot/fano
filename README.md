@@ -1,62 +1,78 @@
 # Fano
 
-A per-chunk compression scheme for tensor data. It splits each fixed-width element into its byte
-planes and entropy-codes each plane separately, because in a floating-point weight almost all of the
-redundancy sits in one byte — the sign and exponent — while the mantissa is close to noise. A coder
-that treats the element as an opaque run of bytes sees neither.
+**Tensor files stored 11–36% smaller than Hugging Face's Xet stores them today, and read back
+faster.** Drop-in for a content-addressed store: one new scheme byte, dedup untouched, exact bytes
+back or an error. Apache-2.0, one vendored dependency, decoder written twice so the two can be
+checked against each other.
 
-Measured against what HuggingFace's Xet storage does today, on real files from the Hub, it is
-**11–36% smaller on F32 and BF16 weights while being faster to both write and read**, and it takes
-**4–42% off eight classes of file that Xet stores uncompressed**.
-
-Apache-2.0. One vendored dependency: huff0 from
-[FiniteStateEntropy](https://github.com/Cyan4973/FiniteStateEntropy) (BSD-2-Clause, in
-`third_party/`). Nothing else.
+The idea fits in a sentence. A floating-point weight is two or four bytes, and nearly all of the
+redundancy sits in one of them — the sign and exponent — while the mantissa is close to noise. Code
+that byte on its own and pass the rest through untouched. A compressor that sees the element as an
+opaque run of bytes averages the two together and finds little in either.
 
 ---
 
-## What it does, in one paragraph
+## What you get
 
-A BF16 weight is two bytes: one carries a sign and an 8-bit exponent, the other carries mantissa
-bits. Across a tensor the exponent byte takes maybe 30 distinct values with a sharply peaked
-distribution — 2.7 bits of entropy in an 8-bit byte — while the mantissa byte is nearly uniform at
-7.96 bits. Interleaved, they average out and a general-purpose compressor finds little. Separated,
-the first is worth coding and the second is worth passing through untouched. That is the whole idea;
-everything else is making it fast and making the decoder safe.
+Measured on real files from the Hub, 64 KiB chunks, one pinned core, medians of five runs, every
+output decompressed and compared byte-for-byte. The comparison is xet-core's own `compression_scheme.rs`,
+`bg4_prediction.rs` and byte grouping, compiled unmodified against `lz4_flex 0.13.0` and verified
+byte-identical to upstream `7af65ba2`.
 
-## Measured
+| file class | Xet today | Fano | bytes | write MB/s | read MB/s | read µs / chunk |
+|---|---:|---:|---:|---|---|---|
+| BF16 · LLM weights | 1.14× | **1.49×** | **−23%** | 495 → **1,078** | 2,275 → **3,446** | 27 → **18** |
+| F32 · embeddings | 1.25× | **1.59×** | **−21%** | 591 → **1,131** | 2,273 → **3,539** | 27 → **18** |
+| F32 · audio model | 1.48× | **2.32×** | **−36%** | 571 → **1,210** | 2,285 → **3,277** | 27 → **19** |
+| F16 · GGUF weights | stored raw | **1.50×** | **−33%** | memcpy → 375 | memcpy → 920 | ~0 → 71 |
+| INT8 weights | stored raw | **1.73×** | **−42%** | memcpy → coded | memcpy → 1,913 | ~0 → 31 |
+| FP8 E4M3 weights | stored raw | **1.21×** | **−18%** | memcpy → coded | memcpy → 1,169 | ~0 → 53 |
+| GGUF Q8_0 quantised | stored raw | 1.04× | −4% | memcpy → coded | memcpy → coded | — |
+| llama.cpp imatrix | 1.45× | 1.26× | **+13%** | — | — | — |
 
-Both schemes run over identical bytes of real Hub files, alternating per repetition on one pinned
-core, medians of at least three runs, every output decompressed and compared against the original.
-The comparison is xet-core's own `compression_scheme.rs`, `bg4_prediction.rs` and byte grouping,
-compiled unmodified against `lz4_flex 0.13.0` and verified byte-identical to upstream `7af65ba2`.
+Three things to read off this table.
 
-| class | Xet today | Fano | size | compress | read back |
-|---|---:|---:|---|---|---|
-| BF16 · LLM weights | 1.1447 | **1.4885** | −23.1% | 2.18× faster | 1.51× faster |
-| F32 · embeddings | 1.2522 | **1.5872** | −21.1% | 1.91× faster | 1.56× faster |
-| F32 · audio | 1.4785 | **2.3209** | −36.3% | 2.12× faster | 1.43× faster |
-| F16 · LLM weights | 1.0000 | **1.3230** | −24.4% | — | — |
-| FP8 E4M3 | 1.0000 | **1.2133** | −17.6% | — | — |
-| INT8 | 1.0000 | **1.7272** | −42.1% | — | — |
-| INT32 | 1.0000 | **1.1031** | −9.3% | — | — |
-| GGUF · F16 | 1.0006 | **1.5012** | −33.3% | — | — |
+**On F32 and BF16 there is no trade.** The file is smaller *and* both directions are faster, because
+coding one byte plane with a Huffman table is less work than LZ4 searching four for matches it will
+not find. A 64 KiB chunk that took Xet 126 µs to write takes Fano 58.
 
-The rows at ratio 1.0000 are the interesting ones: Xet inspects those files, finds no repeated byte
-patterns, and stores them exactly as uploaded. They are not incompressible — they are compressible a
-different way, and every byte taken there is free. Where the last two columns are blank, today's
-scheme is doing a `memcpy`, so there is no decode to be faster than; the honest comparison is that
-Fano spends 20–60 µs per 64 KiB chunk to remove bytes that are currently not removed at all.
+**The "stored raw" rows are free ground.** Xet inspects those files, finds no repeated byte patterns,
+and stores them exactly as uploaded. They are not incompressible — they are compressible a different
+way. Every byte taken there is a byte nobody was taking, for 30–70 µs per chunk that was previously a
+`memcpy`. Whether that is worth it depends on your link: the INT8 row pays for itself below 7 Gb/s,
+the FP8 row below 1.7 Gb/s. Above that, store raw.
 
-**On the nine F32 and BF16 classes there is no trade at all**: smaller *and* quicker in both
-directions. Elsewhere it does more work to get the file smaller, which still arrives sooner over any
-link below several gigabits per second, because a smaller file is a shorter download.
+**Fano loses on importance-matrix files, by 13%.** Their byte planes are near-random but 18% of
+4-byte-aligned positions repeat, which is exactly what LZ4 finds and an order-0 coder cannot. The row
+is here because a table with only wins is marketing, and because it points at the real answer for that
+class: an imatrix is regenerable from the model, the calibration corpus and the llama.cpp version —
+the same recipe shape as the section below.
 
-Full numbers, including the classes where it loses, are in [BENCH.md](BENCH.md).
+Full numbers, including what was tried and did not work, are in [BENCH.md](BENCH.md).
+
+## Where the bigger saving is, and why it is not in this package yet
+
+Measuring Fano against a week of Hub uploads turned up something larger than any codec: **most
+quantised models on the Hub are the deterministic output of a program whose input the Hub already
+holds.** A `Q8_0` GGUF is `llama.cpp` run over weights that sit in another repository, and the Hub
+records that relationship in its own `base_model:quantized` tags — on 80% of GGUF bytes.
+
+Given the parent, the quantised file barely needs storing. The block scale `d = amax/127` recomputes
+exactly, every block. The codes recompute by inverting the dequantisation formula; 99.4% land
+exactly and the rest are off by one. Measured across eight repositories and four base models, a
+`Q8_0` costs **1.4% of itself** given its parent. `Q5_K` and `Q6_K` reproduce every code exactly and
+keep only their scales — 9%. Fused mixture-of-experts tensors reproduce at 100%.
+
+That is a *recipe*, not a compression ratio: the saving is real only while the parent is held, so
+it belongs inside a content-addressed store as a derived-chunk type, not in a codec. Fano is the
+codec. The recipe layer is measured and documented but not yet shipped — the measurement record,
+every script, and the honest accounting of what resolves and what does not are in
+[`mzip/hfbench`](https://github.com/Cranot/mzip/tree/master/hfbench). If you run a store and want to
+talk about that layer, the numbers are there to argue with.
 
 ## Using it
 
-### Rust
+**Rust**
 
 ```toml
 [dependencies]
@@ -65,100 +81,80 @@ fano = "0.1"
 
 ```rust
 match fano::compress(&chunk) {
-    Some(packed) => store(packed),           // smaller; the stream carries its own length
-    None         => store_raw(&chunk),       // too small or incompressible: use your raw path
+    Some(packed) => store(packed),        // smaller; the stream carries its own length
+    None         => store_raw(&chunk),    // too small or incompressible: use your raw path
 }
-
-let chunk = fano::decompress(&packed)?;      // exact bytes back, or an error
+let chunk = fano::decompress(&packed)?;   // exact bytes back, or an error
 ```
 
-`compress` returns `None` rather than a larger buffer when the scheme does not pay, so it drops
-into a store that already has a raw fallback. The uncompressed length travels inside the payload as
-a varint, which costs three bytes on a 64 KiB chunk and means a caller with a
-`fn(&[u8]) -> Result<Vec<u8>>` shaped interface needs no signature change.
+`compress` returns `None` instead of a larger buffer when the scheme does not pay, so it slots into
+a store that already has a raw fallback. The length travels inside the payload as a varint — three
+bytes on a 64 KiB chunk — so a `fn(&[u8]) -> Result<Vec<u8>>` interface needs no signature change.
 
-### C or C++
+**C or C++**
 
 ```c
 #include "plane_entropy.h"
-
 size_t cap = pe_compress_bound(n);
-size_t sz  = pe_compress(dst, cap, src, n);          /* 0 = does not apply, store raw */
-size_t got = pe_decompress(out, n, dst, sz);         /* returns n, or 0 if malformed */
+size_t sz  = pe_compress(dst, cap, src, n);     /* 0 = does not apply, store raw */
+size_t got = pe_decompress(out, n, dst, sz);    /* n on success, 0 if malformed  */
 ```
 
-Header-only C++ is available too (`plane_entropy.hpp`, namespace `pe`). `make check` builds and runs
-the suite; `make` alone produces `libplane_entropy.a`.
+Header-only C++ is in `plane_entropy.hpp` (namespace `pe`). `make` builds `libplane_entropy.a`;
+`make check` runs the suite.
 
-### Adopting it in a content-addressed store
+**If you run a content-addressed store**
 
-[`xet-core.patch`](xet-core.patch) is the complete change against xet-core main `7af65ba2`: one
-variant on `CompressionScheme`, the four trait arms, one dependency line. It also states what does
-*not* move — the chunk record layout, the chunk hash taken over uncompressed bytes so deduplication
-is untouched, and the existing fallback to `None` when a scheme fails to shrink a chunk. It gives
-two selection policies with the measured numbers behind each, and a rollout order that respects the
-fact that an unknown scheme byte is rejected by the header validator, so readers must ship before
-writers.
+[`xet-core.patch`](xet-core.patch) is the complete change against xet-core `7af65ba2`: one variant on
+`CompressionScheme`, four trait arms, one dependency line. It states what does *not* move — the
+chunk record, the hash over uncompressed bytes so dedup is untouched, the existing fallback to
+`None` when a scheme fails to shrink. One operational fact matters more than the rest: **readers
+must ship before writers**, because the header validator rejects an unknown scheme byte.
+[INTEGRATION.md](INTEGRATION.md) gives two selection policies with the measured numbers behind each
+and the rollout order.
 
-## The format
+## Why you can trust the decoder
 
-[SPEC.md](SPEC.md) is a byte-exact specification: the stream layout, the encoder's policy, and every
-rule a decoder must enforce. A decoder written from it interoperates with this implementation, and
-`vectors.txt` pins 144 streams so a second implementation can prove it.
+[SPEC.md](SPEC.md) is byte-exact: stream layout, encoder policy, every rule a decoder must enforce.
+[`vectors.txt`](vectors.txt) pins 144 streams by SHA-256, 36 by full bytes, so a second
+implementation can prove interoperability rather than assert it.
 
-The stream carries no magic number, no version field and no checksum. That is deliberate: the
-container already records a scheme id and a length, and a content-addressed store already hashes the
-chunk. Paying for those again per chunk would be waste.
+The suite is 162,799 assertions in three build configurations plus a differential fuzzer, and the
+parts that matter most were built to be independent of the code they check:
 
-## Testing
+- **A second decoder written from the spec alone**, sharing no code with the implementation and
+  using no Huffman at all, handles 78 of the 144 streams without executing a line of the coder.
+- **Every validation rule has a stream constructed to break it**, and the optimised decoder, the
+  reference decoder and the C API must all refuse it.
+- **The fuzzer requires two implementations to agree** on accept or reject, produce identical bytes
+  when both accept, and never touch the guard bands around the destination.
+- **The encoder's one decision — how many planes — is integer arithmetic.** A fixed-point log with
+  the Miller-Madow correction as an exact constant, so every conforming build emits the same bytes
+  regardless of compiler, flags or platform `log2`. The frozen vectors hold across gcc, clang and
+  aarch64 because of it.
 
-`make check && make check-asan && make check-nosimd && make fuzz` — 162,799 assertions in each of
-three build configurations, plus a differential fuzzer.
+This suite exists in its current form because three rounds of adversarial review found defects in
+the previous one — a fuzzer that counted outcomes instead of asserting them, frozen vectors silently
+skipped when absent. Those are fixed. Two findings stay open by choice and are named in
+[TESTING.md](TESTING.md), along with the two things the tests do *not* independently establish.
 
-What the tests establish, and what they rest on, is written out in [TESTING.md](TESTING.md),
-including the two things they do *not* independently verify. Briefly:
+## What it is not for
 
-- **An independent decoder.** `test_stream.hpp` contains a parser and decoder written from the spec
-  alone, sharing no code with the implementation and using no Huffman at all. It handles 78 of the
-  144 round-trip streams and checks them without executing a line of the coder.
-- **Constructed malformed streams.** Every validation rule has at least one stream that breaks it,
-  and each must be refused by the optimised decoder, the reference decoder and the C API alike.
-- **Frozen streams.** 144 entries pinned by SHA-256, 36 of them by full bytes. The digest is
-  implemented in the test and self-checked against the published FIPS vectors, so a broken digest
-  cannot quietly make the check vacuous.
-- **Differential fuzzing.** Two implementations must agree on accept or reject, produce identical
-  bytes when both accept, and never touch the guard bands around the destination.
+Text, already-compressed data, or quantised formats with sub-byte fields packed across byte
+boundaries. Those planes sit near 8 bits per byte and pass through raw, at which point the stream
+costs more than the input by its headers — which is exactly when `compress` returns `None` and tells
+you to store raw. Element widths are 2 and 4 bytes; 8-byte elements are handled as two groups.
+Minimum input is 64 bytes, and below a few hundred a Huffman table costs more than it saves.
 
-The suite exists because three rounds of adversarial review found real defects in it — a fuzzer that
-counted outcomes instead of asserting them, frozen vectors that were skipped when absent, a
-portability build that left half the vector paths compiled in. Those are fixed; two findings remain
-open by choice and are named in TESTING.md.
-
-## Reproducibility
-
-The encoder's choice of plane count is computed in integer arithmetic — a fixed-point logarithm,
-with the Miller-Madow correction as an exact constant — so every conforming build makes the same
-choice and emits the same bytes. Floating point there would have made the output depend on
-compiler flags, on x87 excess precision and on the platform's `log2`. The frozen vectors hold across
-compilers and architectures because of it.
-
-## Limits
-
-- Not for text, for already-compressed data, or for quantised formats with sub-byte fields packed
-  across byte boundaries. The planes of such data sit near 8 bits per byte and pass through raw,
-  and the stream then exceeds the input by its headers — the caller should fall back, as `compress`
-  returning `None` tells it to.
-- Element widths of 2 and 4 bytes. Single-byte formats are coded as one stream; 8-byte elements are
-  handled as two 4-byte groups.
-- Minimum input 64 bytes. Below a few hundred bytes a Huffman table costs more than it saves.
-- It loses on one measured class: llama.cpp importance-matrix files, by 1.2%, because their content
-  repeats in a way that suits an LZ scheme and not an order-0 one.
+The stream carries no magic, no version, no checksum. Deliberately: the container already records a
+scheme id and a length, and a content-addressed store already hashes the chunk. Paying for those
+again per chunk is waste.
 
 ## Provenance
 
-The scheme came out of measuring [mzip](https://github.com/Cranot/mzip) against what Xet actually
-does per 64 KiB chunk. mzip keeps its dual licence; this coder is Apache-2.0 so that a storage
-system can adopt it without a licensing conversation.
+This came out of measuring [mzip](https://github.com/Cranot/mzip) against what Xet actually does per
+64 KiB chunk. mzip keeps its dual licence; this coder is Apache-2.0 so that a storage system can
+adopt it without a licensing conversation.
 
 Named for Robert Fano, who in 1951 offered his MIT information theory class a term paper in place of
 a final exam: find the most efficient binary code. David Huffman took the option. His algorithm is
