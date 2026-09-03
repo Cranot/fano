@@ -60,12 +60,18 @@ records that relationship in its own `base_model:quantized` tags — on 80% of G
 Given the parent, the quantised file does not need storing at all. Running the publisher's own
 toolchain on the parent — `convert_hf_to_gguf`, then `llama-quantize` with the publisher's imatrix
 and the per-tensor types the published header already lists — **reproduces the published file byte
-for byte.** Measured on two publishers and two architectures: a mradermacher static Q4_K_M, exact
-across all 4,596,736 superblocks; a bartowski imatrix Q4_K_M on a hybrid-SSM model, exact across all
-19,850,240 superblocks, with 152 bytes of a 2.88 GB file differing — thirty-eight float32 values off
-by one ulp where the converter calls `exp()`, a libm artefact outside the quantiser entirely. The
-toolchain is deterministic and hardware-independent: two builds, one with every SIMD extension off,
-produced identical bytes.
+for byte.** Measured on six files from five publishers and five architectures. Three are exact: a
+mradermacher static Q4_K_M (all 4,596,736 superblocks); a bartowski imatrix Q4_K_M on a hybrid-SSM
+model (all 19,850,240 superblocks, 152 bytes differing — thirty-eight float32 values one ulp apart
+where the converter calls `exp()`); and a Q8_0 written by a *different exporter entirely*, which
+llama.cpp's toolchain reproduced across all 113 tensors — the format is a closed form and two
+implementations agree on every byte. Two mixture-of-experts models reproduce every fused expert tensor
+exactly and land at 99.96% and 96.5% overall; both residuals trace to the quantiser *build* — a type
+rule that ignores overrides, and imatrix weighting that moved between versions — so a recipe names the
+llama.cpp commit, not just its version. The sixth file did not reproduce because its declared parent
+was wrong: a base-plus-instruct merge tagged as a quantisation of the base, caught in one step because
+its F32 norms did not match. The toolchain itself is deterministic and hardware-independent: two
+builds, one with every SIMD extension off, produced identical bytes.
 
 So the file is a *recipe*: parent, tool versions, output precision, quant type, imatrix, and a type
 map that costs nothing because the header carries it. That belongs inside a content-addressed store
