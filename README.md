@@ -100,6 +100,18 @@ and what does not are in
 [`mzip/hfbench`](https://github.com/Cranot/mzip/tree/master/hfbench). If you run a store and want
 to talk about that layer, the numbers are there to argue with.
 
+## A different kind of faster: progressive weights
+
+Every speed figure above makes the same bytes arrive sooner. There is a second lever: change *which*
+bytes arrive first. Store a 16-bit tensor as three layers — a 4-bit quant, the residual that lifts it
+to 8-bit, the residual that restores exact bf16 — and a client can start inference after the first
+layer and upgrade in place while the rest streams. Measured on real weights, the three layers total
+**12.7 bits per weight against the 14.0 the Hub stores the flat file at today**: progressive delivery
+is smaller than the status quo, not a trade against it, and a usable model is in hand at 30% of the
+download — 3.3× sooner. Against Fano's own flat 10.7 it costs two bits per weight; that is the price
+of starting early. Fano codes each layer the way it codes anything else; the layering is a container
+proposal, measured in `mzip/hfbench` RESULT 114, not yet a format.
+
 ## Using it
 
 **Rust**
