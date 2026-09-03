@@ -94,7 +94,8 @@ map that costs nothing because the header carries it. That belongs inside a cont
 as a derived-chunk type, not in a codec — the saving holds only while the parent is held, and it is
 bought with ingest compute rather than bytes. Fano is the codec. The recipe layer is measured and
 documented but not shipped; the record, every script, and the honest accounting of what resolves
-(41–66% of declared parents today) and what does not are in
+(94% of declared-parent bytes have a parent the converter can use; 94% of those are the right model)
+and what does not are in
 [`mzip/hfbench`](https://github.com/Cranot/mzip/tree/master/hfbench). If you run a store and want
 to talk about that layer, the numbers are there to argue with.
 
