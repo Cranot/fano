@@ -93,7 +93,11 @@ The same logic reaches past quantisation. Half of the 16-bit uploads that no wit
 could place turn out to be fine-tunes or copies of a popular model uploaded months earlier — found by
 guessing the most-downloaded model of the same shape and checking 64 KiB — and half of those carry no
 tag at all. Stored against the parent with an FSE delta coder built from Fano's own entropy stage, a
-fine-tune costs about a tenth to a third of the flat file.
+fine-tune costs about a tenth to a third of the flat file. Two uploads that correlated at zero with
+their base were the base with its hidden dimensions renumbered — identical outputs, every column
+intact — and ordering the dimensions by the layer-norm weight makes them 76% byte-identical again with
+no search; a store that canonicalises before chunking folds such copies, one that hashes storage
+order holds each as 72 GB of new bytes.
 
 So the file is a *recipe*: parent, tool versions, output precision, quant type, imatrix, and a type
 map that costs nothing because the header carries it. That belongs inside a content-addressed store
